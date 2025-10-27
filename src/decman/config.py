@@ -85,6 +85,18 @@ class Commands:
         """
         return ["pacman", "-Rs", "--color=always"] + pkgs
 
+    def list_orphans(self) -> list[str]:
+        """
+        Running this command lists orphaned packages (installed as deps, not required).
+        """
+        return ["pacman", "-Qdtq", "--color=never"]
+
+    def remove_orphans(self, pkgs: list[str]) -> list[str]:
+        """
+        Running this command removes orphaned packages with configs.
+        """
+        return ["pacman", "-Rns", "--color=always"] + pkgs
+
     def enable_units(self, units: list[str]) -> list[str]:
         """
         Running this command enables the given systemd units.
@@ -235,3 +247,16 @@ pkg_cache_dir: str = "/var/cache/decman"
 aur_rpc_timeout: typing.Optional[int] = 30
 enable_fpm: bool = True
 number_of_packages_stored_in_cache: int = 3
+
+# Whether decman should use yay for AUR packages when available.
+# If enabled and yay is found, decman will use yay (run as SUDO_USER) to install/upgrade
+# declared AUR packages instead of the built-in foreign package manager.
+use_yay_for_aur_if_available: bool = False
+
+# When enabled, decman will install lightweight guard wrappers for pacman and yay into
+# /usr/local/bin to block manual package sync/remove/upgrade outside of decman runs.
+enable_pkgmgr_wrappers: bool = False
+
+# If enabled, decman will show package cache information and prompt to clean
+# uninstalled/old cached packages (pacman -Sc) after package operations.
+prompt_clean_pacman_cache: bool = False

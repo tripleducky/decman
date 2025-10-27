@@ -4,6 +4,8 @@ Module containing the CLI Application.
 
 import argparse
 import os
+import shutil
+import subprocess
 import sys
 import traceback
 
@@ -229,6 +231,9 @@ class Core:
             self._remove_pkgs()
             self._upgrade_pkgs()
             self._install_pkgs()
+            # Offer to remove orphan packages after package operations
+            if not self.only_print:
+                self._offer_remove_orphans()
 
         if self.update_units:
             self._enable_units()
@@ -267,10 +272,30 @@ class Core:
         l.print_summary("Upgrading packages.")
         if not self.only_print:
             self.pacman.upgrade()
+            # Prefer built-in FPM unless disabled or yay is preferred
             if conf.enable_fpm and self.update_foreign_packages:
                 self.fpm.upgrade(
                     self.upgrade_devel, self.force_build, self.source.ignored_packages
                 )
+            elif (
+                self.update_foreign_packages
+                and conf.use_yay_for_aur_if_available
+                and shutil.which("yay") is not None
+            ):
+                # Ensure declared AUR packages are up to date via yay (skips up-to-date)
+                sudo_user = os.environ.get("SUDO_USER")
+                if sudo_user:
+                    aur_list = sorted(list(self.source.aur_packages))
+                    if aur_list:
+                        l.print_summary(
+                            "Installing/upgrading declared AUR packages with yay (skips up-to-date):"
+                        )
+                        l.print_list("AUR packages:", aur_list)
+                        decman.prg(["yay", "-S", "--needed"] + aur_list, user=sudo_user)
+                else:
+                    l.print_warning(
+                        "SUDO_USER not set; cannot run yay as a regular user. Skipping yay upgrade."
+                    )
 
     def _install_pkgs(self):
         currently_installed = self.pacman.get_installed()
@@ -285,13 +310,43 @@ class Core:
 
         if not self.only_print:
             self.pacman.install(to_install_pacman)
-            if conf.enable_fpm and self.update_foreign_packages:
-                self.fpm.install(to_install_fpm, force=self.force_build)
+            if self.update_foreign_packages:
+                # Split foreign packages to AUR and user packages
+                aur_declared = self.source.aur_packages
+                aur_to_install = [p for p in to_install_fpm if p in aur_declared]
+                user_pkg_to_install = [p for p in to_install_fpm if p not in aur_declared]
+
+                used_yay = False
+                if conf.use_yay_for_aur_if_available and shutil.which("yay") is not None and aur_to_install:
+                    sudo_user = os.environ.get("SUDO_USER")
+                    if sudo_user:
+                        l.print_summary(
+                            "Installing declared AUR packages with yay (skips up-to-date):"
+                        )
+                        l.print_list("AUR packages:", aur_to_install)
+                        decman.prg(["yay", "-S", "--needed"] + aur_to_install, user=sudo_user)
+                        used_yay = True
+                    else:
+                        l.print_warning(
+                            "SUDO_USER not set; cannot run yay as a regular user. Falling back to decman's builder if enabled."
+                        )
+
+                remaining = user_pkg_to_install + ([] if used_yay else aur_to_install)
+                if remaining:
+                    if conf.enable_fpm:
+                        self.fpm.install(remaining, force=self.force_build)
+                    else:
+                        # Can't install remaining via fpm; warn the user
+                        l.print_warning(
+                            "Foreign package installation skipped because both decman FPM is disabled and yay was not used."
+                        )
 
     def _create_and_remove_files(self):
         l.print_summary("Installing files.")
 
         all_created = self.source.create_all_files(self.only_print)
+        # Optionally add pacman/yay guard wrappers
+        all_created.extend(self._maybe_install_pkgmgr_wrappers())
         to_remove = self.source.files_to_remove(self.store, all_created)
 
         l.print_list("Ensured files are up to date:", all_created, elements_per_line=1)
@@ -308,6 +363,160 @@ class Core:
                 l.print_warning(f"Failed to remove file: {file}")
 
         self.store.created_files = all_created
+
+    def _maybe_install_pkgmgr_wrappers(self) -> list[str]:
+        """
+        Installs pacman/yay guard wrappers into /usr/local/bin if enabled.
+        Returns the list of created file paths (for tracking/removal).
+        """
+        created: list[str] = []
+        if self.only_print or not conf.enable_pkgmgr_wrappers:
+            return created
+
+        src_path = self.store.source_file or "/path/to/source.py"
+
+        pacman_wrapper_content = (
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "PACMAN_BIN=/usr/bin/pacman\n\n"
+            "check_tree() {\n"
+            "  local p=$PPID\n"
+            "  local depth=0\n"
+            "  while [[ $p -gt 1 && $depth -lt 12 ]]; do\n"
+            "    if grep -qa 'decman' \"/proc/$p/cmdline\" 2>/dev/null; then\n"
+            "      return 0\n"
+            "    fi\n"
+            "    p=$(awk '{print $4}' \"/proc/$p/stat\" 2>/dev/null || echo 1)\n"
+            "    depth=$((depth+1))\n"
+            "  done\n"
+            "  return 1\n"
+            "}\n\n"
+            "if [[ \"${DECMAN_ALLOW:-}\" == \"1\" ]] || check_tree; then\n"
+            "  exec \"$PACMAN_BIN\" \"$@\"\n"
+            "fi\n\n"
+            "block=false\n"
+            "for arg in \"$@\"; do\n"
+            "  if [[ \"$arg\" == \"--\" ]]; then break; fi\n"
+            "  if [[ \"$arg\" == --sync || \"$arg\" == --remove || \"$arg\" == --upgrade ]]; then\n"
+            "    block=true\n"
+            "  fi\n"
+            "  if [[ \"$arg\" == -* ]]; then\n"
+            "    [[ \"$arg\" == *S* ]] && block=true\n"
+            "    [[ \"$arg\" == *U* ]] && block=true\n"
+            "    [[ \"$arg\" == *R* ]] && block=true\n"
+            "  fi\n"
+            "done\n\n"
+            "if $block; then\n"
+            "  cat >&2 <<'EOF'\n"
+            "Manual pacman install/remove/upgrade blocked by decman guard (pre-download).\n\n"
+            "Please update your decman source and run:\n"
+            f"  sudo decman --source {src_path}\n\n"
+            "To bypass once (not recommended):\n"
+            "  sudo DECMAN_ALLOW=1 pacman <args>\n"
+            "EOF\n"
+            "  exit 1\n"
+            "fi\n\n"
+            "exec \"$PACMAN_BIN\" \"$@\"\n"
+        )
+
+        yay_wrapper_content = (
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "YAY_BIN=/usr/bin/yay\n\n"
+            "check_tree() {\n"
+            "  local p=$PPID\n"
+            "  local depth=0\n"
+            "  while [[ $p -gt 1 && $depth -lt 12 ]]; do\n"
+            "    if grep -qa 'decman' \"/proc/$p/cmdline\" 2>/dev/null; then\n"
+            "      return 0\n"
+            "    fi\n"
+            "    p=$(awk '{print $4}' \"/proc/$p/stat\" 2>/dev/null || echo 1)\n"
+            "    depth=$((depth+1))\n"
+            "  done\n"
+            "  return 1\n"
+            "}\n\n"
+            "if [[ \"${DECMAN_ALLOW:-}\" == \"1\" ]] || check_tree; then\n"
+            "  exec \"$YAY_BIN\" \"$@\"\n"
+            "fi\n\n"
+            "block=false\n"
+            "for arg in \"$@\"; do\n"
+            "  if [[ \"$arg\" == \"--\" ]]; then break; fi\n"
+            "  if [[ \"$arg\" == --sync || \"$arg\" == --remove || \"$arg\" == --upgrade ]]; then\n"
+            "    block=true\n"
+            "  fi\n"
+            "  if [[ \"$arg\" == -* ]]; then\n"
+            "    [[ \"$arg\" == *S* ]] && block=true\n"
+            "    [[ \"$arg\" == *U* ]] && block=true\n"
+            "    [[ \"$arg\" == *R* ]] && block=true\n"
+            "  fi\n"
+            "done\n\n"
+            "if $block; then\n"
+            "  cat >&2 <<'EOF'\n"
+            "Manual yay install/remove/upgrade blocked by decman guard (pre-download).\n\n"
+            "Please update your decman source and run:\n"
+            f"  sudo decman --source {src_path}\n\n"
+            "To bypass once (not recommended):\n"
+            "  sudo DECMAN_ALLOW=1 yay <args>\n"
+            "EOF\n"
+            "  exit 1\n"
+            "fi\n\n"
+            "exec \"$YAY_BIN\" \"$@\"\n"
+        )
+
+        wrappers = {
+            "/usr/local/bin/pacman": pacman_wrapper_content,
+            "/usr/local/bin/yay": yay_wrapper_content,
+        }
+
+        for target, content in wrappers.items():
+            try:
+                file = decman.File(content=content, permissions=0o755)
+                file.copy_to(target)
+                created.append(target)
+            except OSError as e:
+                l.print_error(f"{e}")
+                l.print_warning(f"Failed to install wrapper: {target}")
+        return created
+
+    def _offer_clean_pkg_cache(self):
+        """
+        Show pacman cache summary and optionally prompt to clean uninstalled/old packages.
+        """
+        if self.only_print or not conf.prompt_clean_pacman_cache:
+            return
+
+        cache_dir = "/var/cache/pacman/pkg"
+        try:
+            # Get cache size
+            result = subprocess.run(
+                ["du", "-sh", cache_dir],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if result.returncode == 0:
+                cache_size = result.stdout.decode().strip().split()[0]
+                l.print_summary(f"Package cache size: {cache_size}")
+
+            # Count cached packages
+            cache_files = len(
+                [
+                    f
+                    for f in os.listdir(cache_dir)
+                    if f.endswith((".pkg.tar.zst", ".pkg.tar.xz", ".pkg.tar.gz", ".pkg.tar"))
+                ]
+            )
+            if cache_files == 0:
+                return
+
+            l.print_summary(f"Found {cache_files} cached package file(s).")
+            if l.prompt_confirm(
+                "Clean uninstalled and old cached packages? (pacman -Sc)", default=False
+            ):
+                decman.prg(["pacman", "-Sc", "--noconfirm"])
+                l.print_summary("Package cache cleaned.")
+        except Exception as e:  # pylint: disable=broad-except
+            l.print_warning(f"Failed to check/clean package cache: {e}")
 
     def _enable_units(self):
         to_enable = self.source.units_to_enable(self.store)
@@ -339,6 +548,20 @@ class Core:
         l.print_summary("Running after update hooks.")
         if not self.only_print:
             self.source.run_after_update()
+
+    def _offer_remove_orphans(self):
+        """
+        Interactively offer to remove orphaned packages.
+        """
+        orphans = self.pacman.list_orphans()
+        if not orphans:
+            return
+        l.print_list(
+            "Orphan packages detected (installed as deps, no longer required):",
+            orphans,
+        )
+        if l.prompt_confirm("Remove these orphan packages now?", default=False):
+            self.pacman.remove_orphans(orphans)
 
 
 def _resolve_source() -> l.Source:

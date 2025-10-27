@@ -880,6 +880,43 @@ class Pacman:
         if conf.print_pacman_output_highlights:
             print_highlighted_pacman_messages(output)
 
+    def list_orphans(self) -> list[str]:
+        """
+        Returns a list of orphaned packages (installed as dependencies, not required).
+        """
+        try:
+            result = subprocess.run(
+                conf.commands.list_orphans(), check=False, stdout=subprocess.PIPE
+            )
+            output = result.stdout.decode().strip()
+            if result.returncode != 0 and output == "":
+                # No orphans returns non-zero sometimes; treat empty as none
+                return []
+            if output == "":
+                return []
+            return [line for line in output.split("\n") if line]
+        except subprocess.CalledProcessError as error:
+            raise err.UserFacingError(
+                f"Failed to list orphan packages using '{error.cmd}'. Output: {error.stdout}."
+            ) from error
+
+    def remove_orphans(self, packages: list[str]):
+        """
+        Removes the given orphan packages with configs (Rns).
+        """
+        if not packages:
+            return
+
+        returncode, output = echo_and_capture_command(
+            conf.commands.remove_orphans(packages)
+        )
+        if returncode != 0:
+            raise err.UserFacingError(
+                f"Failed to remove orphan packages using pacman. Process exited with code {returncode}."
+            )
+        if conf.print_pacman_output_highlights:
+            print_highlighted_pacman_messages(output)
+
 
 def print_highlighted_pacman_messages(output: str):
     """
