@@ -143,6 +143,29 @@ bash scripts/bootstrap-arch.sh --source example/my_source.py
 
 The script will re-exec with sudo and run decman from this repo via `python -m decman` using `PYTHONPATH=src`.
 
+### One-shot setup and install
+
+If you want to copy the example source to your home config and apply it in one command (and, as part of that first run, install decman as a system-wide package via AUR):
+
+```bash
+bash scripts/setup-my-config.sh
+```
+
+Options:
+
+- `--source path/to/source.py` use another source in this repo
+- `--force` (deprecated; existing file is always backed up automatically)
+
+Behavior:
+
+- If `~/.config/decman/my_source.py` already exists, it is first backed up to a timestamped `my_source.py.bak-YYYYmmdd-HHMMSS`, then replaced by the new one.
+
+Uninstall note: If you enabled pacman/yay wrappers in your source and want to remove them before uninstalling decman, set `conf.enable_pkgmgr_wrappers = False` in your source and run decman once more so it cleans up the wrappers. Then uninstall with:
+
+```bash
+sudo pacman -Rns decman
+```
+
 ## What decman manages?
 
 ### Packages
