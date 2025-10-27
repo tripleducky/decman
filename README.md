@@ -118,25 +118,30 @@ decman --help
 
 ## Installation
 
-Clone the decman PKGBUILD:
+### Quick start (no install, run from repo)
 
-```sh
-git clone https://aur.archlinux.org/decman.git
+If you just cloned this repository on a fresh Arch install and want to try it immediately without installing a package:
+
+```bash
+# From repo root
+bash scripts/run-decman.sh --source example/my_source.py
 ```
 
-Review the PKGBUILD and install it.
+Tip: Copy the example source to your user config and run again later without a long path:
 
-```sh
-cd decman
-makepkg -si
+```bash
+mkdir -p ~/.config/decman
+cp example/my_source.py ~/.config/decman/my_source.py
+bash scripts/run-decman.sh --source ~/.config/decman/my_source.py
 ```
 
-Remember to add decman to its own configuration.
+You can also bootstrap minimal dependencies first (python, git):
 
-```py
-import decman
-decman.aur_packages += ["decman"]
+```bash
+bash scripts/bootstrap-arch.sh --source example/my_source.py
 ```
+
+The script will re-exec with sudo and run decman from this repo via `python -m decman` using `PYTHONPATH=src`.
 
 ## What decman manages?
 
