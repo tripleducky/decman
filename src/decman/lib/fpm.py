@@ -829,7 +829,8 @@ class PackageBuilder:
     Used for building packages in a chroot.
     """
 
-    always_included_packages = ["base-devel", "git"]
+    # Include a minimal base system in the chroot to avoid pacstrap failures.
+    always_included_packages = ["base", "base-devel", "git"]
 
     def __init__(
         self,
@@ -913,12 +914,37 @@ class PackageBuilder:
         except KeyError:
             pass
 
-        subprocess.run(
-            conf.commands.make_chroot(self.chroot_dir, list(self._pkgs_in_chroot)),
-            env=mkarchroot_env_vars,
-            check=True,
-            capture_output=conf.suppress_command_output,
-        )
+        # Ensure decman's pacman/yay/paru guard wrappers do not block mkarchroot
+        # which legitimately needs to invoke pacman on the host.
+        mkarchroot_env_vars["DECMAN_ALLOW"] = "1"
+
+        # Normalize package specs to real package names for mkarchroot
+        mkarchroot_pkgs = self._resolve_host_pkg_names(list(self._pkgs_in_chroot))
+
+        try:
+            subprocess.run(
+                conf.commands.make_chroot(self.chroot_dir, mkarchroot_pkgs),
+                env=mkarchroot_env_vars,
+                check=True,
+                capture_output=conf.suppress_command_output,
+            )
+        except subprocess.CalledProcessError as e:
+            # Surface mkarchroot stderr/stdout to help diagnose exit 255 issues
+            try:
+                err_out = (e.stderr or b"").decode(errors="ignore").strip()
+                out = (e.stdout or b"").decode(errors="ignore").strip()
+            except Exception:
+                err_out, out = "", ""
+            l.print_error(
+                f"mkarchroot failed (exit {e.returncode}). Packages: {mkarchroot_pkgs}"
+            )
+            if out:
+                l.print_warning("mkarchroot stdout:")
+                l.print_continuation(out)
+            if err_out:
+                l.print_warning("mkarchroot stderr:")
+                l.print_continuation(err_out)
+            raise
 
     def remove_build_environment(self):
         """
@@ -958,10 +984,15 @@ class PackageBuilder:
 
         l.print_info("Installing build dependencies to chroot.")
 
+        # Resolve any virtual/soname-style specs to real package names within the chroot
+        chroot_install_pkgs = self._resolve_chroot_pkg_names(
+            chroot_new_pacman_pkgs
+        ) + PackageBuilder.always_included_packages
+
         subprocess.run(
             conf.commands.install_chroot_packages(
                 self.chroot_dir,
-                chroot_new_pacman_pkgs + PackageBuilder.always_included_packages,
+                chroot_install_pkgs,
             ),
             check=True,
             capture_output=conf.suppress_command_output,
@@ -1185,3 +1216,61 @@ before and thus are found in the cache."
             raise err.UserFacingError(
                 f"Failed to clone and review PKGBUILD from {git_url}"
             ) from error
+
+    def _resolve_host_pkg_names(self, pkgs: list[str]) -> list[str]:
+        """
+        Resolve package specs (including soname-style like 'libfoo.so>=1') to real
+        repository package names on the host, using pacman. Falls back to the
+        original spec if resolution fails.
+        """
+        resolved: list[str] = []
+        for p in pkgs:
+            try:
+                result = subprocess.run(
+                    ["pacman", "-Sddp", "--print-format=%n", p],
+                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                name = result.stdout.decode().strip()
+                resolved.append(name if result.returncode == 0 and name else p)
+            except Exception:  # pylint: disable=broad-except
+                resolved.append(p)
+        # Deduplicate while preserving order
+        seen = set()
+        ordered: list[str] = []
+        for n in resolved:
+            if n not in seen:
+                seen.add(n)
+                ordered.append(n)
+        return ordered
+
+    def _resolve_chroot_pkg_names(self, pkgs: list[str]) -> list[str]:
+        """
+        Resolve package specs to real package names inside the chroot using pacman
+        via arch-nspawn. Falls back to the original spec if resolution fails.
+        """
+        resolved: list[str] = []
+        for p in pkgs:
+            try:
+                name = (
+                    subprocess.run(
+                        conf.commands.resolve_real_name(self.chroot_dir, p),
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    .stdout.decode()
+                    .strip()
+                )
+                resolved.append(name if name else p)
+            except Exception:  # pylint: disable=broad-except
+                resolved.append(p)
+        # Deduplicate while preserving order
+        seen = set()
+        ordered: list[str] = []
+        for n in resolved:
+            if n not in seen:
+                seen.add(n)
+                ordered.append(n)
+        return ordered

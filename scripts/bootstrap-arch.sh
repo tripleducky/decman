@@ -7,7 +7,11 @@ set -euo pipefail
 # - run decman with the provided source (defaults to example/my_source.py)
 # Usage: ./scripts/bootstrap-arch.sh [--source /path/to/source.py]
 
-SOURCE_ARG=${1:-"--source example/my_source.py"}
+if [ "$#" -eq 0 ]; then
+  args=("--source" "example/my_source.py")
+else
+  args=("$@")
+fi
 
 if ! command -v python &>/dev/null || ! command -v git &>/dev/null; then
   echo "[BOOTSTRAP] Installing required packages: python git"
@@ -15,4 +19,4 @@ if ! command -v python &>/dev/null || ! command -v git &>/dev/null; then
 fi
 
 # Delegate to run-decman.sh which re-execs with sudo
-"$(dirname "$0")/run-decman.sh" ${SOURCE_ARG}
+"$(dirname "$0")/run-decman.sh" "${args[@]}"

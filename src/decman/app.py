@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import traceback
+import typing
 
 import decman
 import decman.config as conf
@@ -234,6 +235,11 @@ class Core:
             # Offer to remove orphan packages after package operations
             if not self.only_print:
                 self._offer_remove_orphans()
+                # Optionally clean pacman cache automatically (safer -Sc)
+                self._offer_clean_pkg_cache()
+
+            # Optionally ensure niri-qml is installed (AUR or source), controlled by config
+            self._ensure_qml_niri()
 
         if self.update_units:
             self._enable_units()
@@ -272,30 +278,33 @@ class Core:
         l.print_summary("Upgrading packages.")
         if not self.only_print:
             self.pacman.upgrade()
-            # Prefer built-in FPM unless disabled or yay is preferred
-            if conf.enable_fpm and self.update_foreign_packages:
-                self.fpm.upgrade(
-                    self.upgrade_devel, self.force_build, self.source.ignored_packages
-                )
-            elif (
+            # Before handling AUR, ensure requested helper is present if configured
+            self._ensure_aur_helper_installed_if_needed()
+
+            # Prefer built-in FPM unless disabled or an AUR helper is preferred and available
+            helper_exe = self._resolve_aur_helper_exe()
+            if (
                 self.update_foreign_packages
-                and conf.use_yay_for_aur_if_available
-                and shutil.which("yay") is not None
+                and conf.use_aur_helper_for_aur
+                and helper_exe is not None
             ):
-                # Ensure declared AUR packages are up to date via yay (skips up-to-date)
                 sudo_user = os.environ.get("SUDO_USER")
                 if sudo_user:
                     aur_list = sorted(list(self.source.aur_packages))
                     if aur_list:
                         l.print_summary(
-                            "Installing/upgrading declared AUR packages with yay (skips up-to-date):"
+                            f"Ensuring declared AUR packages with {helper_exe} (skips up-to-date):"
                         )
                         l.print_list("AUR packages:", aur_list)
-                        decman.prg(["yay", "-S", "--needed"] + aur_list, user=sudo_user)
+                        decman.prg([helper_exe, "-S", "--needed"] + aur_list, user=sudo_user)
                 else:
                     l.print_warning(
-                        "SUDO_USER not set; cannot run yay as a regular user. Skipping yay upgrade."
+                        "SUDO_USER not set; cannot run the AUR helper as a regular user. Skipping helper-based upgrade."
                     )
+            elif conf.enable_fpm and self.update_foreign_packages:
+                self.fpm.upgrade(
+                    self.upgrade_devel, self.force_build, self.source.ignored_packages
+                )
 
     def _install_pkgs(self):
         currently_installed = self.pacman.get_installed()
@@ -311,24 +320,31 @@ class Core:
         if not self.only_print:
             self.pacman.install(to_install_pacman)
             if self.update_foreign_packages:
+                # Make sure helper exists if configured
+                self._ensure_aur_helper_installed_if_needed()
+                helper_exe = self._resolve_aur_helper_exe()
                 # Split foreign packages to AUR and user packages
                 aur_declared = self.source.aur_packages
                 aur_to_install = [p for p in to_install_fpm if p in aur_declared]
                 user_pkg_to_install = [p for p in to_install_fpm if p not in aur_declared]
 
                 used_yay = False
-                if conf.use_yay_for_aur_if_available and shutil.which("yay") is not None and aur_to_install:
+                if (
+                    conf.use_aur_helper_for_aur
+                    and helper_exe is not None
+                    and aur_to_install
+                ):
                     sudo_user = os.environ.get("SUDO_USER")
                     if sudo_user:
                         l.print_summary(
-                            "Installing declared AUR packages with yay (skips up-to-date):"
+                            f"Installing declared AUR packages with {helper_exe} (skips up-to-date):"
                         )
                         l.print_list("AUR packages:", aur_to_install)
-                        decman.prg(["yay", "-S", "--needed"] + aur_to_install, user=sudo_user)
+                        decman.prg([helper_exe, "-S", "--needed"] + aur_to_install, user=sudo_user)
                         used_yay = True
                     else:
                         l.print_warning(
-                            "SUDO_USER not set; cannot run yay as a regular user. Falling back to decman's builder if enabled."
+                            "SUDO_USER not set; cannot run the AUR helper as a regular user. Falling back to decman's builder if enabled."
                         )
 
                 remaining = user_pkg_to_install + ([] if used_yay else aur_to_install)
@@ -340,6 +356,123 @@ class Core:
                         l.print_warning(
                             "Foreign package installation skipped because both decman FPM is disabled and yay was not used."
                         )
+
+    def _resolve_aur_helper_exe(self) -> typing.Optional[str]:
+        """Return the real system AUR helper binary path if available, else None.
+
+        Important: We ignore our own guard wrappers in /usr/local/bin and only
+        consider the real binaries in /usr/bin to avoid false positives before
+        the helper is actually installed.
+
+        Back-compat: if aur_helper isn't set but use_yay_for_aur_if_available is True,
+        prefer yay.
+        """
+        helper = getattr(conf, "aur_helper", None)
+        if helper is None and getattr(conf, "use_yay_for_aur_if_available", False):
+            helper = "yay"
+
+        if helper not in ("yay", "paru"):
+            return None
+
+        candidate = f"/usr/bin/{helper}"
+        return candidate if os.path.exists(candidate) else None
+
+    def _ensure_aur_helper_installed_if_needed(self):
+        """If a helper is configured but missing, try to install it via FPM (AUR)."""
+        helper = getattr(conf, "aur_helper", None)
+        if helper is None and getattr(conf, "use_yay_for_aur_if_available", False):
+            helper = "yay"
+
+        if helper not in ("yay", "paru"):
+            return
+
+        # Only consider the real binary under /usr/bin; ignore our wrappers in /usr/local/bin
+        if self._resolve_aur_helper_exe() is not None:
+            return
+
+        pkg = getattr(conf, "aur_helper_package", None)
+        if pkg is None:
+            pkg = "yay-bin" if helper == "yay" else "paru-bin"
+
+        if conf.enable_fpm and self.update_foreign_packages:
+            l.print_summary(f"Installing configured AUR helper '{helper}' via decman's builder: {pkg}")
+            try:
+                self.fpm.install([pkg], force=self.force_build)
+            except Exception as e:  # pylint: disable=broad-except
+                l.print_warning(f"Failed to install AUR helper '{pkg}': {e}")
+                # Fallback path: try building the helper locally via makepkg (no chroot)
+                if not self.only_print:
+                    self._fallback_install_helper_via_makepkg(helper, pkg)
+        else:
+            # If FPM is disabled, attempt direct makepkg bootstrap instead of giving up.
+            if not self.only_print:
+                l.print_summary(
+                    f"Bootstrapping AUR helper '{helper}' via makepkg (FPM disabled): {pkg}"
+                )
+                self._fallback_install_helper_via_makepkg(helper, pkg)
+            else:
+                l.print_warning(
+                    f"AUR helper '{helper}' is not installed and decman FPM is disabled; cannot auto-install helper."
+                )
+
+    def _fallback_install_helper_via_makepkg(self, helper: str, pkg: str):
+        """Attempt to bootstrap-install an AUR helper without chroot using makepkg.
+
+        Strategy:
+        - Clone/refresh the AUR repo to a temp dir
+        - Build as the invoking SUDO_USER using makepkg (build only, no install)
+        - Install the built package(s) with pacman -U as root
+        """
+        sudo_user = os.environ.get("SUDO_USER")
+        if not sudo_user:
+            l.print_warning(
+                "Cannot run makepkg fallback because SUDO_USER is not set; skipping helper bootstrap."
+            )
+            return
+
+        repo_url = f"https://aur.archlinux.org/{pkg}.git"
+        # Use /tmp (sticky, user-writable) to avoid permission issues; build as SUDO_USER
+        workdir = f"/tmp/decman-{helper}-bootstrap"
+        try:
+            # If an old root-owned directory exists from a prior attempt, remove it so user can clone
+            if os.path.exists(workdir):
+                try:
+                    st = os.stat(workdir)
+                    # If not owned by the target user, remove and reclone as user
+                    import pwd as _pwd
+                    target_uid = _pwd.getpwnam(sudo_user).pw_uid
+                    if st.st_uid != target_uid:
+                        shutil.rmtree(workdir, ignore_errors=True)
+                except Exception:
+                    # If anything goes wrong determining ownership, remove and recreate
+                    shutil.rmtree(workdir, ignore_errors=True)
+
+            if not os.path.exists(workdir):
+                l.print_info(f"Cloning {pkg} AUR repo to {workdir}...")
+                decman.prg(["git", "clone", repo_url, workdir], user=sudo_user)
+            else:
+                l.print_info(f"Updating existing repo in {workdir}...")
+                decman.prg(["git", "-C", workdir, "pull"], user=sudo_user)
+
+            # Build as the invoking user (no install here)
+            l.print_info("Building helper package via makepkg (no chroot)...")
+            # Ensure BUILDDIR is writable by the user; point it to the repo itself
+            decman.prg(["bash", "-lc", f"cd {workdir} && BUILDDIR={workdir} makepkg -s -f --noconfirm"], user=sudo_user)
+
+            # Collect built package files
+            built_files = [
+                os.path.join(workdir, f)
+                for f in os.listdir(workdir)
+                if f.endswith(tuple(conf.valid_pkgexts))
+            ]
+            if not built_files:
+                l.print_warning("makepkg did not produce any package files; cannot install helper.")
+                return
+
+            l.print_summary(f"Installing helper packages with pacman -U: {', '.join(os.path.basename(f) for f in built_files)}")
+            decman.prg(["pacman", "-U", "--noconfirm"] + built_files)
+        except Exception as e:  # pylint: disable=broad-except
+            l.print_warning(f"Fallback makepkg bootstrap for '{pkg}' failed: {e}")
 
     def _create_and_remove_files(self):
         l.print_summary("Installing files.")
@@ -463,9 +596,54 @@ class Core:
             "exec \"$YAY_BIN\" \"$@\"\n"
         )
 
+        paru_wrapper_content = (
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "PARU_BIN=/usr/bin/paru\n\n"
+            "check_tree() {\n"
+            "  local p=$PPID\n"
+            "  local depth=0\n"
+            "  while [[ $p -gt 1 && $depth -lt 12 ]]; do\n"
+            "    if grep -qa 'decman' \"/proc/$p/cmdline\" 2>/dev/null; then\n"
+            "      return 0\n"
+            "    fi\n"
+            "    p=$(awk '{print $4}' \"/proc/$p/stat\" 2>/dev/null || echo 1)\n"
+            "    depth=$((depth+1))\n"
+            "  done\n"
+            "  return 1\n"
+            "}\n\n"
+            "if [[ \"${DECMAN_ALLOW:-}\" == \"1\" ]] || check_tree; then\n"
+            "  exec \"$PARU_BIN\" \"$@\"\n"
+            "fi\n\n"
+            "block=false\n"
+            "for arg in \"$@\"; do\n"
+            "  if [[ \"$arg\" == \"--\" ]]; then break; fi\n"
+            "  if [[ \"$arg\" == --sync || \"$arg\" == --remove || \"$arg\" == --upgrade ]]; then\n"
+            "    block=true\n"
+            "  fi\n"
+            "  if [[ \"$arg\" == -* ]]; then\n"
+            "    [[ \"$arg\" == *S* ]] && block=true\n"
+            "    [[ \"$arg\" == *U* ]] && block=true\n"
+            "    [[ \"$arg\" == *R* ]] && block=true\n"
+            "  fi\n"
+            "done\n\n"
+            "if $block; then\n"
+            "  cat >&2 <<'EOF'\n"
+            "Manual paru install/remove/upgrade blocked by decman guard (pre-download).\n\n"
+            "Please update your decman source and run:\n"
+            f"  sudo decman --source {src_path}\n\n"
+            "To bypass once (not recommended):\n"
+            "  sudo DECMAN_ALLOW=1 paru <args>\n"
+            "EOF\n"
+            "  exit 1\n"
+            "fi\n\n"
+            "exec \"$PARU_BIN\" \"$@\"\n"
+        )
+
         wrappers = {
             "/usr/local/bin/pacman": pacman_wrapper_content,
             "/usr/local/bin/yay": yay_wrapper_content,
+            "/usr/local/bin/paru": paru_wrapper_content,
         }
 
         for target, content in wrappers.items():
@@ -482,7 +660,7 @@ class Core:
         """
         Show pacman cache summary and optionally prompt to clean uninstalled/old packages.
         """
-        if self.only_print or not conf.prompt_clean_pacman_cache:
+        if self.only_print:
             return
 
         cache_dir = "/var/cache/pacman/pkg"
@@ -510,11 +688,20 @@ class Core:
                 return
 
             l.print_summary(f"Found {cache_files} cached package file(s).")
-            if l.prompt_confirm(
-                "Clean uninstalled and old cached packages? (pacman -Sc)", default=False
-            ):
+
+            # If configured, clean automatically without prompting
+            if conf.auto_clean_pacman_cache:
                 decman.prg(["pacman", "-Sc", "--noconfirm"])
-                l.print_summary("Package cache cleaned.")
+                l.print_summary("Package cache cleaned (pacman -Sc).")
+                return
+
+            # Otherwise, fall back to previous prompt-based behaviour if enabled
+            if conf.prompt_clean_pacman_cache:
+                if l.prompt_confirm(
+                    "Clean uninstalled and old cached packages? (pacman -Sc)", default=False
+                ):
+                    decman.prg(["pacman", "-Sc", "--noconfirm"])
+                    l.print_summary("Package cache cleaned.")
         except Exception as e:  # pylint: disable=broad-except
             l.print_warning(f"Failed to check/clean package cache: {e}")
 
@@ -549,6 +736,102 @@ class Core:
         if not self.only_print:
             self.source.run_after_update()
 
+    def _ensure_qml_niri(self):
+        """Install or build niri-qml depending on configuration.
+
+        Modes controlled by conf.qml_niri_install: "off" | "aur" | "source".
+        - aur: install AUR package via configured helper or FPM
+        - source: clone/update, build with 'just build', and install into QT_INSTALL_QML
+        """
+        mode = getattr(conf, "qml_niri_install", "off")
+        if self.only_print or mode == "off":
+            return
+
+        if mode == "aur":
+            pkg = getattr(conf, "qml_niri_aur_package", None)
+            if not pkg:
+                l.print_warning("qml_niri_install is 'aur' but qml_niri_aur_package is not set; skipping.")
+                return
+
+            # Prefer helper if configured and available
+            self._ensure_aur_helper_installed_if_needed()
+            helper_exe = self._resolve_aur_helper_exe()
+            if conf.use_aur_helper_for_aur and helper_exe is not None:
+                sudo_user = os.environ.get("SUDO_USER")
+                if sudo_user:
+                    l.print_summary(f"Installing niri-qml AUR package with {helper_exe}: {pkg}")
+                    decman.prg([helper_exe, "-S", "--needed", pkg], user=sudo_user)
+                    return
+                l.print_warning("SUDO_USER not set; cannot run AUR helper as a regular user. Falling back to FPM if enabled.")
+
+            if conf.enable_fpm and self.update_foreign_packages:
+                l.print_summary(f"Installing niri-qml AUR package via decman's builder: {pkg}")
+                try:
+                    self.fpm.install([pkg], force=self.force_build)
+                except Exception as e:  # pylint: disable=broad-except
+                    l.print_warning(f"Failed to install niri-qml AUR package '{pkg}': {e}")
+            else:
+                l.print_warning("Cannot install niri-qml: no AUR helper available and FPM disabled.")
+            return
+
+        if mode == "source":
+            repo = getattr(conf, "qml_niri_repo_url", "")
+            local = getattr(conf, "qml_niri_local_clone", "/usr/local/src/qml-niri")
+            build_dir = getattr(conf, "qml_niri_build_dir", f"{local}/build")
+            marker = getattr(conf, "qml_niri_install_marker", "/usr/local/share/qml-niri-installed")
+
+            try:
+                import pathlib
+                l.print_summary("Ensuring niri-qml (source build)...")
+
+                # Clone or update repo
+                if os.path.exists(local):
+                    l.print_info(f"Updating {local}...")
+                    subprocess.run(["git", "-C", local, "pull"], check=True, capture_output=True)
+                else:
+                    l.print_info(f"Cloning repo {repo} to {local}...")
+                    os.makedirs(os.path.dirname(local), exist_ok=True)
+                    subprocess.run(["git", "clone", repo, local], check=True)
+
+                # Get current commit
+                current_commit = subprocess.run(["git", "-C", local, "rev-parse", "HEAD"], check=True, stdout=subprocess.PIPE).stdout.decode().strip()
+
+                # Read installed commit
+                installed_commit = None
+                if os.path.exists(marker):
+                    try:
+                        with open(marker, "r", encoding="utf-8") as f:
+                            installed_commit = f.read().strip()
+                    except Exception:  # pylint: disable=broad-except
+                        installed_commit = None
+
+                # Build if missing or commit differs
+                if installed_commit != current_commit:
+                    l.print_info("Building niri-qml (this may take a minute)...")
+                    subprocess.run(["just", "build"], cwd=local, check=True)
+
+                    # Determine Qt QML install path
+                    qml_path = subprocess.run(["qmake6", "-query", "QT_INSTALL_QML"], check=True, stdout=subprocess.PIPE).stdout.decode().strip()
+                    niri_plugin_src = os.path.join(build_dir, "Niri")
+                    niri_plugin_dst = os.path.join(qml_path, "Niri")
+
+                    if os.path.exists(niri_plugin_src):
+                        if os.path.exists(niri_plugin_dst):
+                            shutil.rmtree(niri_plugin_dst)
+                        l.print_info(f"Installing qml-niri plugin to {niri_plugin_dst}...")
+                        shutil.copytree(niri_plugin_src, niri_plugin_dst)
+                        with open(marker, "w", encoding="utf-8") as f:
+                            f.write(current_commit)
+                        l.print_summary(f"qml-niri plugin installed to {niri_plugin_dst}")
+                    else:
+                        l.print_warning(f"Build output not found: {niri_plugin_src}")
+                else:
+                    l.print_info("qml-niri already up-to-date; skipping build.")
+            except subprocess.CalledProcessError as e:
+                l.print_warning(f"Failed to build/install qml-niri: {e}")
+            except Exception as e:  # pylint: disable=broad-except
+                l.print_warning(f"Failed to ensure qml-niri: {e}")
+
     def _offer_remove_orphans(self):
         """
         Interactively offer to remove orphaned packages.
@@ -560,6 +843,12 @@ class Core:
             "Orphan packages detected (installed as deps, no longer required):",
             orphans,
         )
+        # If configured, remove orphans automatically without prompting
+        if conf.auto_remove_orphans:
+            l.print_summary("Removing orphan packages automatically.")
+            self.pacman.remove_orphans(orphans)
+            return
+
         if l.prompt_confirm("Remove these orphan packages now?", default=False):
             self.pacman.remove_orphans(orphans)
 

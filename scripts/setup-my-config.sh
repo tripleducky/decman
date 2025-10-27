@@ -37,7 +37,13 @@ if [[ ! -f "${SRC_PATH}" ]]; then
   exit 1
 fi
 
-TARGET_DIR="${HOME}/.config/decman"
+# If running under sudo, install into the invoking user's home rather than /root
+if [[ $(id -u) -eq 0 && -n "${SUDO_USER-}" ]]; then
+  INVOKER_HOME=$(getent passwd "${SUDO_USER}" | cut -d: -f6)
+  TARGET_DIR="${INVOKER_HOME}/.config/decman"
+else
+  TARGET_DIR="${HOME}/.config/decman"
+fi
 TARGET_PATH="${TARGET_DIR}/my_source.py"
 
 mkdir -p "${TARGET_DIR}"

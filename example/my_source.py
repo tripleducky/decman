@@ -8,6 +8,8 @@ by decman itself. Adjust the lists and config flags below as desired.
 import decman
 from decman import File
 import decman.config as conf
+conf.auto_clean_pacman_cache = True
+conf.auto_remove_orphans = True
 
 # --- Packages ---
 # Pacman packages you want explicitly installed on this system.
@@ -64,20 +66,32 @@ decman.aur_packages += [
 
 # Packages you want decman to ignore (won't install or remove).
 # Useful for tools you prefer to manage manually.
-decman.ignored_packages += ["yay-bin"]
+decman.ignored_packages += []
 
 """
 Behavioral settings (optional)
 """
 
-# Prefer using yay for AUR packages if available (run as SUDO_USER) instead of decman's builder.
-conf.use_yay_for_aur_if_available = True
+# Select preferred AUR helper ("yay" or "paru"). Decman will auto-install the
+# helper package (yay-bin/paru-bin) via its builder if missing, and then use it
+# to install/upgrade declared AUR packages.
+conf.aur_helper = "paru"
+conf.aur_helper_package = "paru-bin"
+conf.use_aur_helper_for_aur = True
 
 # Install pacman/yay guard wrappers to block manual sync/remove/upgrade outside decman runs.
 conf.enable_pkgmgr_wrappers = True
 
 # After package operations, show pacman cache info and optionally offer `pacman -Sc`.
 conf.prompt_clean_pacman_cache = True
+
+# niri-qml installation options
+#   "off"    - do nothing (default)
+#   "aur"    - install via AUR (set conf.qml_niri_aur_package)
+#   "source" - build from source (uses conf.qml_niri_repo_url, *_local_clone, *_build_dir)
+# Examples:
+conf.qml_niri_install = "source"
+conf.qml_niri_repo_url = "https://github.com/tripleducky/qml-niri.git"
 
 # --- AUR packages ---
 # To let decman manage itself from AUR after it's installed:

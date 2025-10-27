@@ -253,6 +253,21 @@ number_of_packages_stored_in_cache: int = 3
 # declared AUR packages instead of the built-in foreign package manager.
 use_yay_for_aur_if_available: bool = False
 
+# Preferred AUR helper. If set to "yay" or "paru", decman will try to use that helper
+# (run as SUDO_USER) for AUR packages when available. If the helper executable is missing and
+# the built-in foreign package manager is enabled, decman will try to install the helper package
+# automatically (defaults to yay-bin or paru-bin unless overridden below).
+aur_helper: typing.Optional[str] = None  # "yay" | "paru" | None
+
+# Which package provides the selected AUR helper. Defaults:
+#   aur_helper == "yay"  -> "yay-bin"
+#   aur_helper == "paru" -> "paru-bin"
+aur_helper_package: typing.Optional[str] = None
+
+# When true (default), decman will use the configured AUR helper for declared AUR packages when
+# available. When false, decman always uses the built-in foreign package manager.
+use_aur_helper_for_aur: bool = True
+
 # When enabled, decman will install lightweight guard wrappers for pacman and yay into
 # /usr/local/bin to block manual package sync/remove/upgrade outside of decman runs.
 enable_pkgmgr_wrappers: bool = False
@@ -260,3 +275,27 @@ enable_pkgmgr_wrappers: bool = False
 # If enabled, decman will show package cache information and prompt to clean
 # uninstalled/old cached packages (pacman -Sc) after package operations.
 prompt_clean_pacman_cache: bool = False
+
+# When true, decman will run `pacman -Sc` automatically after package operations
+# (safer cache cleaning). If False, decman may prompt (or skip) depending on other
+# settings. Default is False to avoid surprises.
+auto_clean_pacman_cache: bool = False
+
+# When true, decman will remove orphaned packages automatically after package
+# operations. Default is False to require manual confirmation.
+auto_remove_orphans: bool = False
+
+# niri-qml installation options
+#   off    - do nothing
+#   aur    - install via AUR helper/FPM using qml_niri_aur_package
+#   source - build from source repository (see variables below)
+qml_niri_install: str = "off"
+
+# When qml_niri_install == "aur", the AUR package name to install, e.g. "qml-niri" or "qml-niri-git"
+qml_niri_aur_package: typing.Optional[str] = None
+
+# When qml_niri_install == "source", the repository and locations used for building/installing
+qml_niri_repo_url: str = "https://github.com/tripleducky/qml-niri.git"
+qml_niri_local_clone: str = "/usr/local/src/qml-niri"
+qml_niri_build_dir: str = "/usr/local/src/qml-niri/build"
+qml_niri_install_marker: str = "/usr/local/share/qml-niri-installed"
