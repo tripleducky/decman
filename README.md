@@ -1,450 +1,138 @@
-# Decman
+# decman
 
-> 🎉 Decman now has a AUR package! 🎉
->
-> To start using the AUR package simply add `decman` to `decman.aur_packages`. To ensure a smooth change, add decman-git to ignored_packages during the conversion.
->
-> ```py
-> import decman
-> decman.aur_packages += ["decman"]
-> decman.ignored_packages += ["decman-git"]
-> ```
+Declarative package & configuration manager for Arch Linux.
 
-Decman is a declarative package & configuration manager for Arch Linux. It allows you to manage installed packages, your dotfiles, enabled systemd units, and run commands automatically. Your system is configured using python so your configuration can be very adaptive.
+This repository contains `decman` (pkg: `decman-git`, version 0.3.4) — a small tool to help manage packages and configuration in a declarative way. The project includes a `PKGBUILD` and a prebuilt package in the `pkg/` directory, so installing on Arch Linux or Arch-based distributions such as Cachy OS is straightforward.
 
-If you want, you can also use decman with other configuration languages. See the [example with TOML later in this README](#decman-with-other-configuration-languages).
+## Highlights
 
-## Overview
+- Package name: `decman-git`
+- Version: `0.3.4`
+- License: see `LICENSE`
 
-A complete example is available in the `example`-directory of this repository. It also serves as documentation so reading it is recommended.
+## Installation (recommended: Arch Linux / Cachy-OS)
 
-To use decman, you need a source file that declares your system installation. I recommend you put this file in source control, for example in a git repository.
+Cachy OS is Arch-based; the same pacman/makepkg workflow applies.
 
-`/home/user/config/source.py`:
+Choose one of the options below depending on whether you have a prebuilt package, want to build locally from this repository, or prefer an AUR helper.
 
-```py
-import decman
-from decman import File, Directory
+### 1) Install from the packaged file included in this repo
 
-# Declare installed packages
-decman.packages += ["python", "git", "networkmanager", "ufw", "neovim"]
-
-# Declare installed aur packages
-decman.aur_packages += ["protonvpn"]
-
-# Declare configuration files
-# Inline
-decman.files["/etc/vconsole.conf"] = File(content="KEYMAP=us")
-# From files within your repository
-decman.files["/etc/pacman.conf"] = File(source_file="./dotfiles/pacman.conf")
-
-# Declare a whole directory
-decman.directories["/home/user/.config/nvim"] = Directory(source_directory="./dotfiles/nvim",
-                                                          owner="user")
-
-# Ensure that a systemd unit is enabled.
-decman.enabled_systemd_units += ["NetworkManager.service"]
-```
-
-To better organize your system configuration, you can create modules.
-
-`/home/user/config/syncthing.py`:
-
-```py
-from decman import Module, prg
-
-# Your custom modules are child classes of the module class.
-# They can override methods of the Module-class.
-class Syncthing(Module):
-
-    def __init__(self):
-        super().__init__(name="syncthing", enabled=True, version="1")
-
-    def on_enable(self):
-        # Run code when a module is first enabled
-
-        # Call a program
-        prg(["ufw", "allow", "syncthing"])
-
-        # Run any python code
-        print("Remember to setup syncthing with the browser UI!")
-
-    def on_disable(self):
-        # Run code when a module is disabled
-        prg(["ufw", "deny", "syncthing"])
-
-    def pacman_packages(self) -> list[str]:
-        # Packages part of this module
-        return ["syncthing"]
-
-    def systemd_user_units(self) -> dict[str, list[str]]:
-        # Systemd user units part of this module
-        return {"user": ["syncthing.service"]}
-```
-
-Then import your module in your main source file.
-
-`/home/user/config/source.py`:
-
-```py
-import decman
-from syncthing import Syncthing
-
-# NOTE! Removing a enabled module from decman.module means that on_disable will not run.
-# Instead disable the module.
-decman.modules += [Syncthing()]
-```
-
-Then run decman. Note that terminal colors cannot be disabled for decman.
-
-> [!WARNING]
-> Decman runs as root. This means that your `source.py` will be executed as root as well.
-
-```sh
-sudo decman --source /home/user/config/source.py
-```
-
-When you first run decman, you must define the source file, but subsequent runs remember the previous value.
-
-```sh
-sudo decman
-```
-
-Decman has some CLI options, to see them all run:
-
-```sh
-decman --help
-```
-
-## Installation
-
-### Quick start (no install, run from repo)
-
-If you just cloned this repository on a fresh Arch install and want to try it immediately without installing a package:
+This repo contains a built package under `pkg/decman-git/`. If you already have the `.pkg.tar.zst` file (example: `decman-git-0.3.4-1-any.pkg.tar.zst`), install it with pacman:
 
 ```bash
-# From repo root
-bash scripts/run-decman.sh --source example/my_source.py
+sudo pacman -U /path/to/decman-git-0.3.4-1-any.pkg.tar.zst
 ```
 
-Tip: Copy the example source to your user config and run again later without a long path:
+Example (from this repository root): locate the package file and install it:
 
 ```bash
-mkdir -p ~/.config/decman
-cp example/my_source.py ~/.config/decman/my_source.py
-bash scripts/run-decman.sh --source ~/.config/decman/my_source.py
+ls pkg
+sudo pacman -U pkg/<the-package-file>.pkg.tar.zst
 ```
 
-You can also bootstrap minimal dependencies first (python, git):
+### Helper script: quick install/build wrapper
+
+For convenience this repository includes a small helper script that automates the common flows: `scripts/install-arch.sh`.
+
+- Make the script executable and run it from the repo root:
 
 ```bash
-bash scripts/bootstrap-arch.sh --source example/my_source.py
+chmod +x scripts/install-arch.sh
+./scripts/install-arch.sh
 ```
-
-The script will re-exec with sudo and run decman from this repo via `python -m decman` using `PYTHONPATH=src`.
-
-### One-shot setup and install
-
-If you want to copy the example source to your home config and apply it in one command (and, as part of that first run, install decman as a system-wide package via AUR):
-
-```bash
-bash scripts/setup-my-config.sh
-```
-
-Options:
-
-- `--source path/to/source.py` use another source in this repo
-- `--force` (deprecated; existing file is always backed up automatically)
 
 Behavior:
+- If a `.pkg.tar.zst` exists under `pkg/` the script will install it with `sudo pacman -U`.
+- If no package is found and a `PKGBUILD` is present the script will run `makepkg -s` to build, then install the produced package.
 
-- If `~/.config/decman/my_source.py` already exists, it is first backed up to a timestamped `my_source.py.bak-YYYYmmdd-HHMMSS`, then replaced by the new one.
+Flags:
+- `--build` : only build with `makepkg -s` (does not force install)
+- `--install` : only install an existing package (auto-detected or use `--pkg`)
+- `--pkg <path>` : specify the package file to install
 
-Uninstall note: If you enabled pacman/yay wrappers in your source and want to remove them before uninstalling decman, set `conf.enable_pkgmgr_wrappers = False` in your source and run decman once more so it cleans up the wrappers. Then uninstall with:
+This script is intended to make local installs on Arch and Cachy OS fast and repeatable.
+
+### 2) Build and install locally using the included `PKGBUILD`
+
+If you prefer building from the repository (recommended if you want reproducible local builds), use `makepkg`:
 
 ```bash
-sudo pacman -Rns decman
+sudo pacman -S --needed base-devel
+makepkg -si
 ```
 
-## What decman manages?
+This will create a package file and optionally install it (`-s` installs dependencies, `-i` installs the package after building).
 
-### Packages
+### 3) Install using an AUR helper (if an AUR package exists)
 
-Decman can be used to install pacman packages. Decman will install all packages defined in the source and **remove** all explicitly installed packages not defined in the source. You don't need to list dependencies as those will be handeled by pacman. You can set packages to be ignored by decman, so that it won't install them nor remove them.
+If an AUR package named `decman-git` exists, you can use an AUR helper such as `yay` or `paru`:
 
-Please keep in mind that decman doesn't play well with package groups, since all packages part of that group will be installed explicitly. After the initial run decman will now try to remove those packages since it only knows that the group itself should be explicitly installed. Instead of package groups, use meta packages.
-
-```py
-# Include both foreign and pacman packages here.
-decman.ignored_packages += ["yay", "opendoas"]
+```bash
+yay -S decman-git
 ```
 
-### Foreign packages
+### 4) Install with pip (developer / fallback)
 
-> [!NOTE]
-> Building of foreign packages is not the primary function of decman. There are some issues that I may or may not fix.
-> If you can't build a package using decman, consider adding it to `ignored_packages` and building it yourself.
+You can also install the Python package manually (for development or testing). From the repo root:
 
-Decman can install AUR packages as well as user defined packages. Foreign packages are AUR and user packages combined.
-
-Here is an example of a user package. Managing user packages is somewhat cumbersome as you have to declare their versions, dependencies and make dependencies manually. However, you probably won't install many user packages anyway.
-
-```py
-# Note, decman now has a aur package, I recommend using that instead.
-# Also, this example may be out of date
-decman.user_packages.append(
-    decman.UserPackage(
-        pkgname="decman-git",
-        provides=["decman"],
-        version="0.3.4",
-        dependencies=["python", "python-requests", "devtools", "pacman", "systemd", "git"],
-        make_dependencies=[
-            "python-setuptools", "python-build", "python-installer", "python-wheel"
-        ],
-        git_url="https://github.com/kiviktnm/decman-pkgbuild.git",
-    ))
+```bash
+python -m pip install --user .
 ```
 
-Building of foreign packages happens in a chroot. This creates some overhead, but ensures clean builds. By default the chroot is created to `/tmp/decman/build`. I recommend to use a tmpfs for the `/tmp/` directory to speed up builds. Also make sure that the tmpfs-partition is large enough. I recommend at least 6 GB.
+This is not the recommended path for system-wide package management on Arch/Cachy OS — use the package-built flows above for system integration.
 
-Build packages are stored in a cache `/var/cache/decman`. By default decman keeps 3 most recent versions of all packages.
+## Usage
 
-### Systemd units
+After installation, the `decman` CLI should be available on your PATH (usually `/usr/bin/decman`). Get help with:
 
-> [!NOTE]
-> Decman will only enable and disable systemd services. It will not start or stop them.
-
-Decman can enable systemd services, system wide or for a specific user. Decman will enable all units defined in the source, and disable them when they are removed from the source. If a unit is not defined in the source, decman will not touch it.
-
-### Files
-
-Decman functions as a dotfile manager. It will install the defined files and directories to their destinations. You can set file permissions, owners as well as define variables that will be substituted in the installed files. Decman keeps track of all files it creates and when a file is no longer present in your source, it will be also removed from its destination. This helps with keeping your system clean. However, decman won't ever remove directories as they might contain files that weren't created by decman.
-
-### Commands
-
-Modules have 4 methods: `on_enable`, `on_disable`, `after_update` and `after_version_change`. These will be executed if the module is enabled, the module is disabled, after every update and after the version of the module has changed. You can use the helper functions `prg` and `sh` to run programs. These programs could for example be used to update packages managed by another package manager.
-
-## Order of operations
-
-When decman runs, it does the following things in this order.
-
-1. Disable systemd units that are no longer in the source.
-1. Create and update files.
-1. Remove files no longer in the source.
-1. Remove packages not defined in the source.
-1. Upgrade packages.
-   - To upgrade foreign devel packages (eg. `*-git`) use the `--upgrade-devel` CLI option.
-1. Install new packages.
-1. Enable new systemd units.
-1. Run commands:
-   1. `on_enable`
-   1. `after_version_change`
-   1. `on_disable`
-   1. `after_update`
-
-Operations may be skipped with command line options.
-
-## Decman with other configuration languages
-
-Since decman uses Python files to declare your system, you can easily parse another configuration language in your Python source instead of declaring things directly in Python.
-
-<details>
-<summary>Here is a basic example using TOML.</summary>
-
-To use TOML with Python, you need the `toml`-package. To install it in Arch Linux, install the `python-toml`-package.
-
-This example doesn't allow you to use decman's modules or set decman's settings using TOML. You'll have to set them using Python. With this example you can use both TOML and Python if you want.
-It would be possible to add support for TOML decman modules, but I don't think it would be worth the effort.
-
-Write this in your decman source.
-
-```py
-import toml
-import decman
-
-TOML_CONFIG_FILE="/your/file/here.toml"
-
-# These functions convert TOML tables to decman Files/Directories/UserPackages.
-
-def toml_to_decman_file(toml_dict) -> decman.File:
-    return decman.File(content=toml_dict.get("content"),
-                       source_file=toml_dict.get("source_file"),
-                       bin_file=toml_dict.get("bin_file", False),
-                       encoding=toml_dict.get("encoding", "utf-8"),
-                       owner=toml_dict.get("owner"),
-                       group=toml_dict.get("group"),
-                       permissions=toml_dict.get("permissions", 0o644))
-
-
-def toml_to_decman_directory(toml_dict) -> decman.Directory:
-    return decman.Directory(source_directory=toml_dict["source_directory"],
-                            bin_files=toml_dict.get("bin_files", False),
-                            encoding=toml_dict.get("encoding", "utf-8"),
-                            owner=toml_dict.get("owner"),
-                            group=toml_dict.get("group"),
-                            permissions=toml_dict.get("permissions", 0o644))
-
-def toml_to_decman_user_package(toml_dict) -> decman.UserPackage:
-    return decman.UserPackage(pkgname=toml_dict["pkgname"],
-                              version=toml_dict["version"],
-                              dependencies=toml_dict["dependencies"],
-                              git_url=toml_dict["git_url"],
-                              pkgbase=toml_dict.get("pkgbase"),
-                              provides=toml_dict.get("provides"),
-                              make_dependencies=toml_dict.get("make_dependencies"),
-                              check_dependencies=toml_dict.get("check_dependencies"))
-
-
-# Parse TOML into a Python dictionary
-toml_source = toml.load(TOML_CONFIG_FILE)
-
-# Set decman variables using the parsed dictionary.
-
-decman.packages = toml_source.get("packages", [])
-decman.aur_packages = toml_source.get("aur_packages", [])
-decman.ignored_packages = toml_source.get("ignored_packages", [])
-decman.enabled_systemd_units = toml_source.get("enabled_systemd_units", [])
-decman.enabled_systemd_user_units = toml_source.get("enabled_systemd_user_units", {})
-
-for filename, toml_file_dec in toml_source.get("files", {}).items():
-    decman.files[filename] = toml_to_decman_file(toml_file_dec)
-
-for dirname, toml_dir_dec in toml_source.get("directories", {}).items():
-    decman.directories[dirname] = toml_to_decman_directory(toml_dir_dec)
-
-for toml_user_package_dec in toml_source.get("user_packages", []):
-    decman.user_packages.append(toml_to_decman_user_package(toml_user_package_dec))
+```bash
+decman --help
+python -m decman --help
 ```
 
-Then you can use TOML configuration like this:
+For common operations, run the commands you normally use with the tool. If you installed via `makepkg` or `pacman -U`, the installed entrypoint is the `decman` script distributed under `/usr/bin/decman`.
 
-```toml
-packages = ["python", "git", "networkmanager", "ufw", "neovim", "python-toml"]
-aur_packages = ["protonvpn"]
-enabled_systemd_units = ["NetworkManager.service"]
-ignored_packages = ["yay"]
-user_packages = [{
-    # Note, decman now has a aur package, I recommend using that instead.
-    # Also, this example may be out of date
-    pkgname="decman-git",
-    provides=["decman"],
-    version="0.3.4",
-    dependencies=["python", "python-requests", "devtools", "pacman", "systemd", "git"],
-    make_dependencies=[
-        "python-setuptools", "python-build", "python-installer", "python-wheel"
-    ],
-    git_url="https://github.com/kiviktnm/decman-pkgbuild.git"
-}]
+## Uninstall
 
-[files]
-'/etc/vconsole.conf' = { content="KEYMAP=us" }
-'/etc/pacman.conf' = { source_file="./dotfiles/pacman.conf" }
+To remove the package installed via pacman:
 
-[directories]
-'/home/user/.config/nvim' = { source_directory="./dotfiles/nvim", owner="user" }
-
-# To set other file/directory attributes, just add them like this. Note that here I am not using octal notation for permissions.
-'/home/user/.config/example' = { source_directory="./dotfiles/example", owner="user", group="user", bin_files=true, encoding="utf-8", permissions=448 }
-
-[enabled_systemd_user_units]
-user = ["syncthing.service"]
-user2 = ["example.service", "another.service"]
+```bash
+sudo pacman -Rns decman-git
 ```
 
-</details>
+If you installed with pip:
 
-## Why use decman?
-
-Here are some reasons why I created decman for myself.
-
-### Configuration as documentation
-
-You can consult your config to see what packages are installed and what config files are created. If you organize your config into modules, you also see what files, systemd units and packages are related.
-
-### Modular config
-
-In a modular config, you can also change parts of your system eg. switch shells without it affecting your other setups at all. If you create a module called `Shell` that exposes a function `add_alias`, you can call that function from other modules. Then later if you decide to switch from bash to fish, you can change the internals of your `Shell`-module without modifying your other modules at all.
-
-```py
-import theme
-class Shell(Module):
-    def __init__(self):
-        super().__init__("shell", enabled=True, version="1")
-        self._aliases_text = ""
-
-    # --
-
-    def add_alias(self, alias: str, cmd: str):
-        self._aliases_text += f"alias {alias}='{cmd}'\n"
-
-    def files(self) -> dict[str, File]:
-        return {
-            "/home/user/.config/fish/config.fish":
-            File(source_file="./files/shell/config.fish", owner="user")
-        }
-
-
-    def file_variables(self) -> dict[str, str]:
-        fvars = {
-            "%aliases%": self._aliases_text,
-        }
-        # Remember this line when looking at the next point
-        fvars.update(theme.COLORS)
-        return fvars
+```bash
+python -m pip uninstall decman
 ```
 
-### Consistency between applications
+## Troubleshooting
 
-Decman's file variables are a great way to make sure different tools are in sync. For example, you can create a theme file in your config and then use that theme in modules. The previous `Shell`-module imports a theme from a theme file.
+- If pacman reports missing dependencies when installing a package built outside your system, run `sudo pacman -Syu` and ensure `base-devel` is installed before `makepkg`.
+- When installing/upgrading system packages use `sudo` or run commands as root.
+- If the CLI is not found after installation, check `/usr/bin/` or the output of `pacman -Ql decman-git` to list installed files.
 
-`theme.py`:
+## Contributing
 
-```py
-COLORS = {
-    "%PRIMARY_COLOR%": "#b121ff",
-    "%SECONDARY_COLOR%": "#ff5577",
-    "%BACKGROUND_COLOR%": "#6a30d5",
-    # etc
-}
-```
+Development files live in `src/decman/`. The repo also contains tests in `tests/`.
 
-### Reproducibility
+Small ways to help:
 
-You can easily reinstall your system using your decman config.
+- Run the test suite and add tests for regressions.
+- Improve the `PKGBUILD` or add CI packaging workflows.
+- Fix bugs and open PRs on the upstream repository: https://github.com/tripleducky/decman
 
-### Dynamic configuration
+## Files of interest in this repo
 
-Using python you can use the same config for different computers and only change some things between them.
-
-```py
-import socket
-
-if socket.gethostname() == "laptop":
-    # add brightness controls to your laptop
-    decman.packages += ["brightnessctl"]
-```
-
-### Why not use NixOS?
-
-NixOS is a Linux disto built around the idea of declarative system management, so why create a more limited alternative?
-
-I tried NixOS in the past, but it had some issues that caused me to create decman for Arch Linux instead. In my personal opinion:
-
-- NixOS forces you to do everything the Nix way. Sometimes I just want to develop software without having to use nix tools.
-- NixOS is hard, and the documentation (when I last tried it) wasn't that good. Doing more complex stuff was sometimes just very annoying.
-- NixOS has unnecessary abstraction with NixOS options. They are great until you have to configure something specific and there is not an option for it. Then you'll have to inline other configuration language within your Nix config. And if some software doesn't have any premade options you'll have to do write the config manually. Then you'll have some software managed with just options and others with normal config files. I prefer to keep everything consistent.
+- `PKGBUILD` — Arch package build script (used by `makepkg`).
+- `pkg/` — packaged layout and a built package tree.
+- `LICENSE` — license text.
 
 ## License
 
-Copyright (C) 2024 Kivi Kaitaniemi
+See the `LICENSE` file in this repository for license details.
 
-Decman is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as
-published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+---
 
-Decman is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License along with this program. If not,
-see <https://www.gnu.org/licenses/>.
-
-See [license](LICENSE).
+If you want, I can add a tiny helper script to install the built package from `pkg/` automatically, or add a small `scripts/install-arch.sh` wrapper; tell me which you prefer.
